@@ -61,85 +61,113 @@ const DonateProposal = ({ actor, notify, principal }) => {
 
       if (res.ok) {
         const val = res.ok
-        const b64 = "data:image/webp;base64," + (await bufferToBase64(val.image))
+        const image = await icpTransfer_backend.getProposalImage(val.index);
+        const b64 = "data:image/webp;base64," + (image.length > 0 ? await bufferToBase64(image[0]) : "");
 
         console.log("val", val)
 
         // Format proposal data with proper checks for amount_raised
         const amount_raised = Number(await icp_index_canister.get_account_identifier_balance(val.accountId)) / 10 ** 8
 
-        const txResult = await icp_index_canister.get_account_identifier_transactions({
+        let allTxns = [];
+        let txResult = await icp_index_canister.get_account_identifier_transactions({
           account_identifier: val.accountId,
           max_results: BigInt(100),
           start: [],
         });
 
-        let formattedTxs = [];
-
         if (txResult && "Ok" in txResult) {
-          formattedTxs = txResult.Ok.transactions.map((tx, index) => {
-            try {
-              const transaction = tx.transaction;
-              let type = "unknown";
-              let accountId = "Unknown";
-              let amount = 0;
-              console.log("Transaction:", transaction, index);
-              const icrc1_memo = transaction.icrc1_memo.length > 0 ? transaction.icrc1_memo[0] : new Uint8Array();
-              const decoder = new TextDecoder();
-              const memo = decoder.decode(icrc1_memo);
-              console.log("Memo:", memo, index);
-              // Determine transaction type and details based on operation
-              if (transaction.operation && "Transfer" in transaction.operation) {
-                const transfer = transaction.operation.Transfer;
-                const from = transfer.from || "Unknown";
-                const to = transfer.to || "Unknown";
-                amount = transfer.amount && typeof transfer.amount.e8s !== 'undefined'
-                  ? Number(transfer.amount.e8s) / 10 ** 8
-                  : 0;
-
-                // Determine if this is a deposit, withdraw, donate, or claim
-                if (from === val.accountId) {
-                  // If the user is sending funds
-                  if (memo.includes("claim")) {
-                    type = "claim";
-                  } else if (memo.includes("fee")) {
-                    type = "fee";
-                  }
-                  accountId = to;
-                } else if (to === val.accountId) {
-                  type = "donate";
-                  accountId = from;
-                }
-              }
-
-              let timestamp = new Date();
-              if (transaction.timestamp && transaction.timestamp.length > 0 && typeof transaction.timestamp[0].timestamp_nanos !== 'undefined') {
-                timestamp = new Date(Number(Number(transaction.timestamp[0].timestamp_nanos) / 1_000_000));
-              }
-              return {
-                id: typeof tx.id !== 'undefined' ? Number(tx.id) : Math.random(),
-                accountId,
-                amount,
-                type,
-                timestamp,
-              };
-            } catch (err) {
-              console.error("Error processing transaction:", err, tx);
-
-              return {
-                id: Math.random(),
-                accountId: "Error",
-                amount: 0,
-                type: "unknown",
-                timestamp: new Date(),
-              };
-            }
-          });
-        } else if (txResult && "Err" in txResult) {
-          console.error("Error fetching transactions:", txResult.Err);
-        } else {
-          console.error("Unexpected transaction result format:", txResult);
+          allTxns.push(...txResult.Ok.transactions);
         }
+
+        if (allTxns.length == 100) {
+          while (true) {
+            const lastTxnId = allTxns[allTxns.length - 1].id;
+            if (lastTxnId > val.created_at) {
+              txResult = await icp_index_canister.get_account_identifier_transactions({
+                account_identifier: val.accountId,
+                max_results: BigInt(100),
+                start: [lastTxnId],
+              });
+            } else {
+              break;
+            }
+            if (txResult && "Ok" in txResult) {
+              allTxns.push(...txResult.Ok.transactions);
+              if (txResult.Ok.transactions.length < 100) {
+                break;
+              }
+            } else {
+              break;
+            }
+          }
+        }
+
+
+        allTxns = allTxns.filter((tx) => tx.id >= val.created_at);
+
+        console.log("allTxns", allTxns)
+
+
+        const formattedTxs = allTxns.map((tx, index) => {
+          try {
+            const transaction = tx.transaction;
+            let type = "unknown";
+            let accountId = "Unknown";
+            let amount = 0;
+            console.log("Transaction:", transaction, index);
+            const icrc1_memo = transaction.icrc1_memo.length > 0 ? transaction.icrc1_memo[0] : new Uint8Array();
+            const decoder = new TextDecoder();
+            const memo = decoder.decode(icrc1_memo);
+            console.log("Memo:", memo, index);
+            // Determine transaction type and details based on operation
+            if (transaction.operation && "Transfer" in transaction.operation) {
+              const transfer = transaction.operation.Transfer;
+              const from = transfer.from || "Unknown";
+              const to = transfer.to || "Unknown";
+              amount = transfer.amount && typeof transfer.amount.e8s !== 'undefined'
+                ? Number(transfer.amount.e8s) / 10 ** 8
+                : 0;
+
+              // Determine if this is a deposit, withdraw, donate, or claim
+              if (from === val.accountId) {
+                // If the user is sending funds
+                if (memo.includes("claim")) {
+                  type = "claim";
+                } else if (memo.includes("fee")) {
+                  type = "fee";
+                }
+                accountId = to;
+              } else if (to === val.accountId) {
+                type = "donate";
+                accountId = from;
+              }
+            }
+
+            let timestamp = new Date();
+            if (transaction.timestamp && transaction.timestamp.length > 0 && typeof transaction.timestamp[0].timestamp_nanos !== 'undefined') {
+              timestamp = new Date(Number(Number(transaction.timestamp[0].timestamp_nanos) / 1_000_000));
+            }
+            return {
+              id: typeof tx.id !== 'undefined' ? Number(tx.id) : Math.random(),
+              accountId,
+              amount,
+              type,
+              timestamp,
+            };
+          } catch (err) {
+            console.error("Error processing transaction:", err, tx);
+
+            return {
+              id: Math.random(),
+              accountId: "Error",
+              amount: 0,
+              type: "unknown",
+              timestamp: new Date(),
+            };
+          }
+        });
+
 
         console.log("formattedTxs", formattedTxs)
 

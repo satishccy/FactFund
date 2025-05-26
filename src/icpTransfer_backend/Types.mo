@@ -6,6 +6,7 @@ module {
         accountId : Text;
         created_proposals : [Nat64];
         locked_balance : Nat64;
+        created_at : Nat64;
     };
 
     // Proposal data structure for fundraising campaigns
@@ -14,12 +15,12 @@ module {
         name : Text;
         title : Text;
         description : Text;
-        image : Blob;
         subaccount : Blob;
         accountId : Text;
         created_by : Principal;
         amount_required : Nat64;
         claimed : Bool;
+        created_at : Nat64;
     };
 
     // File storage related types

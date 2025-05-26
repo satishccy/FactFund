@@ -24,22 +24,39 @@ const AllProposals = ({ notify, actor }) => {
       const loadAllProposals = async () => {
         setIsLoading(true);
 
-        const res = await icpTransfer_backend.getLatestProposals(10);
-        console.log(res)
+        const allProposals = [];
+        let res = await icpTransfer_backend.getLatestProposals(0, 10);
 
         if (res.ok) {
-          const props = await Promise.all(res.ok.map(async (val) => {
-            var b64 = "data:image/webp;base64," + await bufferToBase64(val.image);
-            console.log({ ...val, image: b64 });
-            return { ...val, image: b64, created_by_text: Principal.from(val.created_by).toString(), amount_required: Number(val.amount_required) / 10 ** 8 };
-          }));
-          setProposals(props)
-          console.log(props)
-
-          return { proposals: props, count: props.length };
-        } else {
-          throw new Error(res.err || "Failed to load proposals");
+          allProposals.push(...res.ok);
         }
+
+        if (allProposals.length == 10) {
+          while (true) {
+            res = await icpTransfer_backend.getLatestProposals(allProposals.length, 10);
+            if (res.ok) {
+              allProposals.push(...res.ok);
+              if (res.ok.length < 10) {
+                break;
+              }
+            } else {
+              break;
+            }
+          }
+        }
+        console.log(allProposals)
+
+        const props = await Promise.all(allProposals.map(async (val) => {
+          const image = await icpTransfer_backend.getProposalImage(val.index);
+          var b64 = "data:image/webp;base64," + (image.length > 0 ? await bufferToBase64(image[0]) : "");
+          console.log({ ...val, image: b64 });
+          return { ...val, image: b64, created_by_text: Principal.from(val.created_by).toString(), amount_required: Number(val.amount_required) / 10 ** 8 };
+        }));
+        setProposals(props)
+        console.log(props)
+
+        return { proposals: props, count: props.length };
+
       };
 
       try {

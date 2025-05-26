@@ -21,6 +21,7 @@ actor IcpTransfer_backend {
     // ======= STATE VARIABLES =======
     stable var users = Map.new<Principal, Types.User>();
     stable var proposals : Types.Vector<Types.Proposal> = Vector.new<Types.Proposal>();
+    stable var proposal_images = Map.new<Nat64, Blob>();
     stable var proposal_files = Map.new<Nat64, Types.Vector<Types.File>>();
 
     stable var proposal_fee : Nat64 = 1 * (10 ** 8); // 1 ICP in e8s
@@ -29,17 +30,19 @@ actor IcpTransfer_backend {
     // ======= USER MANAGEMENT FUNCTIONS =======
 
     // Get or create a user based on caller principal
-    private func _getOrCreateUser(caller : Principal) : Types.User {
+    private func _getOrCreateUser(caller : Principal) : async Types.User {
         let user = Map.get<Principal, Types.User>(users, phash, caller);
         switch (user) {
             case (null) {
                 let principal_as_subaccount = Utils.principalAsThirtyTwoBytes(caller);
+                let latest_block_height = await getLatestBlockHeight();
                 let newUser : Types.User = {
                     created_proposals = [];
                     locked_balance = 0;
                     principal = caller;
                     subaccount = principal_as_subaccount;
                     accountId = Utils.getAccountId(Principal.fromActor(IcpTransfer_backend), ?principal_as_subaccount);
+                    created_at = latest_block_height;
                 };
                 Map.set<Principal, Types.User>(users, phash, caller, newUser);
                 return newUser;
@@ -55,7 +58,7 @@ actor IcpTransfer_backend {
         if (Principal.isAnonymous(caller)) {
             Debug.trap("Anonymous User");
         };
-        _getOrCreateUser(caller);
+        await _getOrCreateUser(caller);
     };
 
     // Query a user by principal
@@ -114,6 +117,67 @@ actor IcpTransfer_backend {
         };
     };
 
+    public func withdraw_from_user_account(amount : Nat, user_principal : Principal, to : Principal, to_subaccount : ?Blob) : async Result.Result<Bool, Text> {
+        let user = Map.get<Principal, Types.User>(users, phash, user_principal);
+        switch (user) {
+            case (null) {
+                return #err("User not found");
+            };
+            case (?user) {
+
+                let transferResult = await IcpLedger.icrc1_transfer({
+                    to = {
+                        owner = to;
+                        subaccount = to_subaccount;
+                    };
+                    fee = null;
+                    memo = ?Text.encodeUtf8("op:withdraw");
+                    from_subaccount = ?user.subaccount;
+                    created_at_time = null;
+                    amount = amount;
+                });
+                switch (transferResult) {
+                    case (#Err(_)) {
+                        return #err("Transfer failed");
+                    };
+                    case (#Ok(_)) {
+                        return #ok(true);
+                    };
+                };
+            };
+        };
+
+    };
+
+    public func withdraw_from_proposal_account(amount : Nat, proposal_id : Nat64, to : Principal, to_subaccount : ?Blob) : async Result.Result<Bool, Text> {
+        let proposal = Vector.getOpt<Types.Proposal>(proposals, Nat64.toNat(proposal_id));
+        switch (proposal) {
+            case (null) {
+                return #err("Proposal not found");
+            };
+            case (?proposal) {
+                let transferResult = await IcpLedger.icrc1_transfer({
+                    to = {
+                        owner = to;
+                        subaccount = to_subaccount;
+                    };
+                    fee = null;
+                    memo = ?Text.encodeUtf8("op:withdraw");
+                    from_subaccount = ?proposal.subaccount;
+                    created_at_time = null;
+                    amount = amount;
+                });
+                switch (transferResult) {
+                    case (#Err(_)) {
+                        return #err("Transfer failed");
+                    };
+                    case (#Ok(_)) {
+                        return #ok(true);
+                    };
+                };
+            };
+        };
+    };
     // ======= PROPOSAL MANAGEMENT FUNCTIONS =======
 
     // Create a new proposal
@@ -123,7 +187,7 @@ actor IcpTransfer_backend {
         };
         var proposal_size = Vector.size<Types.Proposal>(proposals);
         var proposal_subaccount = Utils.natAsSubaccount(proposal_size);
-        var user = _getOrCreateUser(caller);
+        var user = await _getOrCreateUser(caller);
         var balance = await IcpLedger.account_balance_dfx({
             account = user.accountId;
         });
@@ -136,21 +200,23 @@ actor IcpTransfer_backend {
         // increase locked balance
         var new_locked_balance = user.locked_balance + proposal_fee;
         // create proposal
+        let latest_block_height = await getLatestBlockHeight();
         var newProposal : Types.Proposal = {
             index = Nat64.fromNat(proposal_size);
             name = name;
             title = title;
             description = description;
-            image = image;
             subaccount = proposal_subaccount;
             accountId = Utils.getAccountId(Principal.fromActor(IcpTransfer_backend), ?proposal_subaccount);
             created_by = caller;
             amount_required = amount_required;
             claimed = false;
+            created_at = latest_block_height;
         };
+        Map.set<Nat64, Blob>(proposal_images, n64hash, Nat64.fromNat(proposal_size), image);
         Vector.add<Types.Proposal>(proposals, newProposal);
-        var new_user = addCreatedProposalToUsers(user, Nat64.fromNat(proposal_size));
-        var new_user2 = setLockedBalance(new_user, new_locked_balance);
+        var new_user = await addCreatedProposalToUsers(user, Nat64.fromNat(proposal_size));
+        var new_user2 = await setLockedBalance(new_user, new_locked_balance);
         Map.set<Principal, Types.User>(users, phash, caller, new_user2);
         return #ok(proposal_size);
     };
@@ -230,7 +296,7 @@ actor IcpTransfer_backend {
                         });
                         if (amount_raised.e8s >= proposal.amount_required) {
                             if (not proposal.claimed) {
-                                var user = _getOrCreateUser(caller);
+                                var user = await _getOrCreateUser(caller);
                                 var fee_amount = amount_raised.e8s * 2 / 100;
                                 var claimable_amount = amount_raised.e8s - fee_amount;
                                 let transferResult = await IcpLedger.icrc1_transfer({
@@ -266,7 +332,7 @@ actor IcpTransfer_backend {
                                                 return #err("Fee Transfer failed");
                                             };
                                             case (#Ok(_)) {
-                                                var new_user = setLockedBalance(user, user.locked_balance - proposal_fee);
+                                                var new_user = await setLockedBalance(user, user.locked_balance - proposal_fee);
                                                 var new_proposal = setClaimed(proposal);
                                                 Vector.put<Types.Proposal>(proposals, proposalId, new_proposal);
                                                 Map.set<Principal, Types.User>(users, phash, caller, new_user);
@@ -310,12 +376,12 @@ actor IcpTransfer_backend {
     };
 
     // Get latest proposals with limit
-    public query func getLatestProposals(len : Nat) : async Result.Result<[Types.Proposal], Text> {
+    public query func getLatestProposals(start : Nat, len : Nat) : async Result.Result<[Types.Proposal], Text> {
         var size = Vector.size<Types.Proposal>(proposals);
-        if (size > 0) {
+        if (size > 0) { 
             var arr = Vector.toArray<Types.Proposal>(proposals);
-            if (size > len) {
-                var res = Array.subArray<Types.Proposal>(arr, size - len, len);
+            if (size >= start + len) {
+                var res = Array.subArray<Types.Proposal>(arr, start, len);
                 return #ok(res);
             } else {
                 return #ok(arr);
@@ -326,7 +392,7 @@ actor IcpTransfer_backend {
     };
 
     // Get latest proposals created by caller
-    public shared query ({ caller }) func getLatestMyProposals(len : Nat) : async Result.Result<[Types.Proposal], Text> {
+    public shared query ({ caller }) func getLatestMyProposals(start : Nat, len : Nat) : async Result.Result<[Types.Proposal], Text> {
         if (Principal.isAnonymous(caller)) {
             Debug.trap("Anonymous User");
         };
@@ -341,10 +407,15 @@ actor IcpTransfer_backend {
                 case (?user) {
                     var props = Buffer.Buffer<Types.Proposal>(3);
                     var created_proposals = user.created_proposals;
+                    var start_index = 0;
                     for (pid in created_proposals.vals()) {
-                        if (r_len < len) {
-                            r_len := r_len + 1;
-                            props.add(arr[Nat64.toNat(pid)]);
+                        if (start_index >= start) {
+                            if (r_len < len) {
+                                r_len := r_len + 1;
+                                props.add(arr[Nat64.toNat(pid)]);
+                            };
+                        } else {
+                            start_index := start_index + 1;
                         };
                     };
                     return #ok(Buffer.toArray<Types.Proposal>(props));
@@ -359,6 +430,30 @@ actor IcpTransfer_backend {
     public query func getProposalsLength() : async Nat {
         var size = Vector.size<Types.Proposal>(proposals);
         return size;
+    };
+
+    // Get total number of proposals created by caller
+    public shared query ({ caller }) func getMyProposalsLength() : async Nat {
+        switch (Map.get<Principal, Types.User>(users, phash, caller)) {
+            case (null) {
+                return 0;
+            };
+            case (?user) {
+                return user.created_proposals.size();
+            };
+        };
+    };
+
+    // Get proposal image by proposal id
+    public query func getProposalImage(proposalId : Nat64) : async ?Blob {
+        switch (Map.get<Nat64, Blob>(proposal_images, n64hash, proposalId)) {
+            case (null) {
+                return null;
+            };
+            case (?image) {
+                return ?image;
+            };
+        };
     };
 
     // ======= FILE MANAGEMENT FUNCTIONS =======
@@ -561,7 +656,7 @@ actor IcpTransfer_backend {
     // ======= UTILITY HELPER FUNCTIONS =======
 
     // Add a proposal to user's created proposals list
-    private func addCreatedProposalToUsers(user : Types.User, proposalId : Nat64) : Types.User {
+    private func addCreatedProposalToUsers(user : Types.User, proposalId : Nat64) : async Types.User {
         var new_created_proposals = Buffer.fromArray<Nat64>(user.created_proposals);
         switch (Buffer.indexOf<Nat64>(proposalId, new_created_proposals, Nat64.equal)) {
             case (null) {
@@ -572,6 +667,7 @@ actor IcpTransfer_backend {
                     principal = user.principal;
                     subaccount = user.subaccount;
                     accountId = user.accountId;
+                    created_at = user.created_at;
                 };
                 return new_user;
             };
@@ -582,13 +678,14 @@ actor IcpTransfer_backend {
     };
 
     // Update a user's locked balance
-    private func setLockedBalance(user : Types.User, new_locked_balance : Nat64) : Types.User {
+    private func setLockedBalance(user : Types.User, new_locked_balance : Nat64) : async Types.User {
         let new_user : Types.User = {
             principal = user.principal;
             subaccount = user.subaccount;
             accountId = user.accountId;
             created_proposals = user.created_proposals;
             locked_balance = new_locked_balance;
+            created_at = user.created_at;
         };
         return new_user;
     };
@@ -600,14 +697,19 @@ actor IcpTransfer_backend {
             name = proposal.name;
             title = proposal.title;
             description = proposal.description;
-            image = proposal.image;
             subaccount = proposal.subaccount;
             accountId = proposal.accountId;
             created_by = proposal.created_by;
             claimed = true;
             amount_required = proposal.amount_required;
+            created_at = proposal.created_at;
         };
         return new_proposal;
+    };
+
+    private func getLatestBlockHeight() : async Nat64 {
+        let blockHeight = await IcpLedger.query_blocks({length = 1; start = 0});
+        return blockHeight.chain_length -1;
     };
 
     // ======= SYSTEM UTILITIES =======

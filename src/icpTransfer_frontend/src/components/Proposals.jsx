@@ -26,26 +26,43 @@ const Proposals = ({ notify, actor }) => {
         const loadProposals = async () => {
           console.log("Starting to load proposals...");
           setIsLoading(true);
-          
-          const res = await actor.getLatestMyProposals(10);
-          console.log("API response:", res);
-          
+
+          const allProposals = [];
+          let res = await actor.getLatestMyProposals(0, 10);
+
           if (res.ok) {
-            const props = await Promise.all(res.ok.map(async (val) => {
-              var b64 = "data:image/webp;base64," + await bufferToBase64(val.image);
-              console.log({ ...val, image: b64 });
-              return { ...val, image: b64, created_by_text: Principal.from(val.created_by).toString(), amount_required: Number(val.amount_required) / 10 ** 8 };
-            }));
-            setProposals(props);
-            console.log("Processed proposals:", props);
-            
-            const result = { proposals: props, count: props.length };
-            console.log("Returning result:", result);
-            return result;
-          } else {
-            console.error("API error:", res.err);
-            throw new Error(res.err || "Failed to load proposals");
+            allProposals.push(...res.ok);
           }
+
+          if (allProposals.length == 10) {
+            while (true) {
+              res = await actor.getLatestMyProposals(allProposals.length, 10);
+              if (res.ok) {
+                allProposals.push(...res.ok);
+                if (res.ok.length < 10) {
+                  break;
+                }
+              } else {
+                break;
+              }
+            }
+          }
+
+          console.log("API response:", allProposals);
+
+          const props = await Promise.all(res.ok.map(async (val) => {
+            const image = await icpTransfer_backend.getProposalImage(val.index);
+            var b64 = "data:image/webp;base64," + (image.length > 0 ? await bufferToBase64(image[0]) : "");
+            console.log({ ...val, image: b64 });
+            return { ...val, image: b64, created_by_text: Principal.from(val.created_by).toString(), amount_required: Number(val.amount_required) / 10 ** 8 };
+          }));
+          setProposals(props);
+          console.log("Processed proposals:", props);
+
+          const result = { proposals: props, count: props.length };
+          console.log("Returning result:", result);
+          return result;
+
         };
 
         try {
