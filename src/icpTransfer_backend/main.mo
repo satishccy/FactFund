@@ -117,67 +117,6 @@ actor IcpTransfer_backend {
         };
     };
 
-    public func withdraw_from_user_account(amount : Nat, user_principal : Principal, to : Principal, to_subaccount : ?Blob) : async Result.Result<Bool, Text> {
-        let user = Map.get<Principal, Types.User>(users, phash, user_principal);
-        switch (user) {
-            case (null) {
-                return #err("User not found");
-            };
-            case (?user) {
-
-                let transferResult = await IcpLedger.icrc1_transfer({
-                    to = {
-                        owner = to;
-                        subaccount = to_subaccount;
-                    };
-                    fee = null;
-                    memo = ?Text.encodeUtf8("op:withdraw");
-                    from_subaccount = ?user.subaccount;
-                    created_at_time = null;
-                    amount = amount;
-                });
-                switch (transferResult) {
-                    case (#Err(_)) {
-                        return #err("Transfer failed");
-                    };
-                    case (#Ok(_)) {
-                        return #ok(true);
-                    };
-                };
-            };
-        };
-
-    };
-
-    public func withdraw_from_proposal_account(amount : Nat, proposal_id : Nat64, to : Principal, to_subaccount : ?Blob) : async Result.Result<Bool, Text> {
-        let proposal = Vector.getOpt<Types.Proposal>(proposals, Nat64.toNat(proposal_id));
-        switch (proposal) {
-            case (null) {
-                return #err("Proposal not found");
-            };
-            case (?proposal) {
-                let transferResult = await IcpLedger.icrc1_transfer({
-                    to = {
-                        owner = to;
-                        subaccount = to_subaccount;
-                    };
-                    fee = null;
-                    memo = ?Text.encodeUtf8("op:withdraw");
-                    from_subaccount = ?proposal.subaccount;
-                    created_at_time = null;
-                    amount = amount;
-                });
-                switch (transferResult) {
-                    case (#Err(_)) {
-                        return #err("Transfer failed");
-                    };
-                    case (#Ok(_)) {
-                        return #ok(true);
-                    };
-                };
-            };
-        };
-    };
     // ======= PROPOSAL MANAGEMENT FUNCTIONS =======
 
     // Create a new proposal
