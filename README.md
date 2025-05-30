@@ -57,8 +57,8 @@ FactFund solves key trust and transparency issues in traditional crowdfunding by
 
 1. **Clone the Repository**
    ```bash
-   git clone https://github.com/your-username/factfund.git
-   cd factfund
+   git clone https://github.com/satishccy/FactFund.git
+   cd FactFund
 2. **Install Dependencies**
    ```bash
    npm install
